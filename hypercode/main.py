@@ -1,55 +1,43 @@
-import argparse
-import os
-
-from dotenv import load_dotenv
-
-load_dotenv()
+import sys
+from .react_agent import ReActAgent
 
 
-if not os.environ.get("GOOGLE_API_KEY"):
-    print("Error: GOOGLE_API_KEY environment variable not set.")
-    print("Please set it in your .env file or as a system environment variable.")
-    exit(1)
-
-from hypercode.graph import app
+def print_step(phase: str, content: str, data: dict):
+    phase_symbols = {
+        "think": "💭",
+        "act": "⚡",
+        "observe": "👁️",
+        "complete": "✅"
+    }
+    symbol = phase_symbols.get(phase, "•")
+    print(f"\n{symbol} [{phase.upper()}] {content}")
+    
+    if phase == "act" and "tool" in data:
+        print(f"   Tool: {data['tool']}")
+        if "args" in data:
+            for key, value in data["args"].items():
+                print(f"   - {key}: {value}")
 
 
 def main():
-    """
-    Main function for the HyperCode CLI.
-    """
-    parser = argparse.ArgumentParser(description="A Gemini-like code assistant.")
-    parser.add_argument("request", type=str, help="The request to process.")
-    args = parser.parse_args()
+    if len(sys.argv) < 2:
+        print("Usage: python -m hypercode <task>")
+        print("   or: python -m hypercode.tui  (for TUI mode)")
+        sys.exit(1)
     
-    current_state = {"request": args.request}
+    task = " ".join(sys.argv[1:])
+    print(f"🚀 Starting task: {task}\n")
     
-    while True:
-        user_confirmed = None
-        
-        for output in app.stream(current_state):
-            for key, value in output.items():
-                if key == "check_sensitive_tools" and value.get("needs_confirmation"):
-                    print("\n--- Confirmation Required ---")
-                    print("The agent wants to perform the following actions:")
-                    for call in value["pending_tool_calls"]:
-                        print(f"  - Tool: {call['name']}, Args: {call['args']}")
-                    
-                    confirmation = input("Do you want to proceed? (y/n): ").lower()
-                    user_confirmed = (confirmation == 'y')
-                    current_state = value 
-                    break 
-                elif key != "__end__":
-                    print(f"Output from node '{key}':")
-                    print("---")
-                    print(value)
-                    print("\n")
-            
-            if user_confirmed is not None:
-                current_state["user_confirmation"] = user_confirmed
-                current_state["needs_confirmation"] = False 
-            else:
-                break
+    agent = ReActAgent(on_step=print_step)
+    result = agent.run(task)
+    
+    print("\n" + "="*50)
+    if result["success"]:
+        print(f"✅ Task completed in {result['iterations']} iterations")
+    else:
+        print(f"⚠️  Task incomplete after {result['iterations']} iterations")
+    print("="*50)
+
 
 if __name__ == "__main__":
     main()
