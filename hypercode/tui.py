@@ -50,7 +50,14 @@ class StepDisplay(Static):
             return
         
         lines = []
+        current_iter = None
+        
         for step in self.steps[-50:]:  # TODO: last 50 steps
+            # if step.get('data', {}).get('iteration') and step['data']['iteration'] != current_iter:
+            #     current_iter = step['data']['iteration']
+            #     max_iter = step['data'].get('max_iterations', 15)
+            #     lines.append(f"\n[bold white]{'═' * 20} Iteration {current_iter}/{max_iter} {'═' * 20}[/]")
+            
             phase_label = f"[bold {step['color']}]{step['phase'].upper()}[/]"
             time_label = f"[dim]{step['timestamp']}[/]"
             
@@ -64,7 +71,7 @@ class StepDisplay(Static):
                 thinking_lines = step['content'].split('\n')
                 for thinking_line in thinking_lines:
                     if thinking_line.strip():
-                        lines.append(f"  [cyan]{thinking_line.strip()}[/]")
+                        lines.append(f"  [italic cyan]{thinking_line.strip()}[/]")
             else:
                 lines.append(f"  {step['content']}")
             
@@ -78,6 +85,13 @@ class StepDisplay(Static):
                         v_str = v_str[:47] + "..."
                     arg_strs.append(f"{k}={v_str}")
                 lines.append(f"  [dim]→ {tool_name}({', '.join(arg_strs)})[/]")
+            
+            if step['phase'] == 'observe' and 'result' in step['data']:
+                result = step['data']['result']
+                if isinstance(result, dict) and 'success' in result:
+                    icon = "✓" if result['success'] else "✗"
+                    color = "green" if result['success'] else "red"
+                    lines.append(f"  [{color}]{icon}[/]")
             
             lines.append("") 
         self.update("\n".join(lines))
@@ -105,7 +119,26 @@ class FileDisplay(Static):
             self.update("No file changes yet...")
             return
         
+        file_icons = {
+            ".py": "🐍",
+            ".js": "📜",
+            ".txt": "📝",
+            ".md": "📋",
+            ".json": "📊",
+            ".html": "🌐",
+            ".css": "🎨",
+            ".yaml": "⚙️",
+            ".yml": "⚙️",
+            ".toml": "⚙️",
+        }
+        
+        created_count = sum(1 for info in self.files.values() if info['action'] == 'created')
+        modified_count = sum(1 for info in self.files.values() if info['action'] == 'modified')
+        
         lines = []
+        if self.files:
+            lines.append(f"[bold]Modified: {modified_count} | Created: {created_count}[/]\n")
+        
         for file_path, info in list(self.files.items())[-10:]:  # TODO: last 10 files
             action_colors = {
                 "created": "green",
@@ -114,9 +147,25 @@ class FileDisplay(Static):
             }
             color = action_colors.get(info['action'], "white")
             
+            ext = Path(file_path).suffix.lower()
+            icon = file_icons.get(ext, "📄")
+            
             lines.append(f"[{color}]● {info['action'].upper()}[/] [dim]{info['timestamp']}[/]")
-            lines.append(f"[bold]{Path(file_path).name}[/]")
+            lines.append(f"{icon} [bold]{Path(file_path).name}[/]")
             lines.append(f"[dim]{file_path}[/]")
+            
+            try:
+                if Path(file_path).exists():
+                    size = Path(file_path).stat().st_size
+                    if size < 1024:
+                        size_str = f"{size}B"
+                    elif size < 1024 * 1024:
+                        size_str = f"{size/1024:.1f}KB"
+                    else:
+                        size_str = f"{size/(1024*1024):.1f}MB"
+                    lines.append(f"[dim]Size: {size_str}[/]")
+            except:
+                pass
             
             if info['content'] and len(info['content']) < 500:
                 preview = info['content'][:200]
@@ -133,7 +182,58 @@ class FileDisplay(Static):
         self.update_display()
 
 
-class HyperCodeTUI(App):
+class StatisticsFooter(Static):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.total_iterations = 0
+        self.tool_usage = {}
+        self.total_tasks = 0
+        self.completed_tasks = 0
+        self.session_start = datetime.now()
+    
+    def update_stats(self, total_tasks: int, completed_tasks: int, failed_tasks: int, 
+                     total_iterations: int, tool_usage: Dict[str, int]):
+        self.total_tasks = total_tasks
+        self.completed_tasks = completed_tasks
+        self.failed_tasks = failed_tasks
+        self.total_iterations = total_iterations
+        self.tool_usage = tool_usage
+        self.update_display()
+    
+    def update_display(self):
+        parts = []
+        
+        # tasks stats
+        if self.total_tasks > 0:
+            success_rate = (self.completed_tasks / self.total_tasks) * 100 if self.total_tasks > 0 else 0
+            parts.append(f"[bold]📊 Stats:[/] Tasks {self.completed_tasks}/{self.total_tasks} ({success_rate:.0f}%)")
+        
+        if self.total_iterations > 0:
+            parts.append(f"Iterations: {self.total_iterations}")
+        
+        # tool usage
+        if self.tool_usage:
+            tool_strs = []
+            for tool, count in sorted(self.tool_usage.items(), key=lambda x: x[1], reverse=True)[:3]:
+                short_name = tool.replace("_", "")[:6]
+                tool_strs.append(f"{short_name}({count})")
+            if tool_strs:
+                parts.append(f"Tools: {' '.join(tool_strs)}")
+        
+        # session time
+        elapsed = (datetime.now() - self.session_start).total_seconds()
+        mins, secs = divmod(int(elapsed), 60)
+        hours, mins = divmod(mins, 60)
+        if hours > 0:
+            time_str = f"{hours}h{mins}m"
+        else:
+            time_str = f"{mins}m{secs}s"
+        parts.append(f"Session: {time_str}")
+        
+        self.update(" | ".join(parts) if parts else "No statistics yet...")
+
+
+class HyperCode(App):
     CSS = """
     Screen {
         background: $surface;
@@ -148,13 +248,12 @@ class HyperCodeTUI(App):
     }
     
     #left-panel {
-        width: 60%;
-        border: solid $primary;
-        padding: 1;
+        width: 3fr;
+        padding: 2;
     }
     
     #right-panel {
-        width: 40%;
+        width: 1fr;
         border: solid $accent;
         padding: 1;
     }
@@ -184,11 +283,16 @@ class HyperCodeTUI(App):
     VerticalScroll {
         height: 1fr;
     }
+
+    .hidden {
+        display: none;
+    }
     """
     
     BINDINGS = [
-        Binding("ctrl+q", "quit_or_interrupt", "Quit/Interrupt", priority=True),
-        Binding("ctrl+c", "interrupt", "Interrupt", show=False),
+        Binding("ctrl+c", "quit_or_interrupt", "Interrupt", priority=True),
+        Binding("ctrl+q", "interrupt", "Quit/Interrupt", show=False),
+        Binding("ctrl+b", "toggle_right", "Toggle Right Panel"),
     ]
     
     def __init__(self):
@@ -199,6 +303,14 @@ class HyperCodeTUI(App):
         self.task_running = False
         self.quit_pressed_time = None
         self.quit_threshold = 2.0  # TODO: seconds for double ctrl+Q
+        
+        self.total_tasks_completed = 0
+        self.total_tasks_failed = 0
+        self.current_iteration = 0
+        self.max_iterations = 15
+        self.task_start_time = None
+        self.session_start_time = datetime.now()
+        self.tool_usage = {} 
     
     def compose(self) -> ComposeResult:
         yield Header()
@@ -210,12 +322,12 @@ class HyperCodeTUI(App):
             # main panels
             with Horizontal(id="panels"):
                 with Vertical(id="left-panel"):
-                    yield Label("Agent Steps", classes="panel-title")
-                    with VerticalScroll():
+                    yield Label("Chat", classes="panel-title")
+                    with VerticalScroll(id="steps-scroll"): 
                         yield StepDisplay(id="steps")
                 
                 with Vertical(id="right-panel"):
-                    yield Label("File Changes", classes="panel-title")
+                    yield Label("📁 File Changes", classes="panel-title")
                     with VerticalScroll():
                         yield FileDisplay(id="files")
             
@@ -226,7 +338,6 @@ class HyperCodeTUI(App):
         yield Footer()
     
     def on_mount(self):
-        """Called when app is mounted."""
         self.query_one("#task-input").focus()
     
     async def on_input_submitted(self, event: Input.Submitted):
@@ -249,11 +360,25 @@ class HyperCodeTUI(App):
         status_parts = []
         
         if self.current_task:
-            status_parts.append(f"Running: {self.current_task[:50]}...")
+            task_display = self.current_task[:40] + "..." if len(self.current_task) > 40 else self.current_task
+            status_parts.append(f"[bold cyan]Task:[/] {task_display}")
+            
+            if self.current_iteration > 0:
+                status_parts.append(f"[yellow]Iter:[/] {self.current_iteration}/{self.max_iterations}")
+            if self.task_start_time:
+                elapsed = (datetime.now() - self.task_start_time).total_seconds()
+                mins, secs = divmod(int(elapsed), 60)
+                status_parts.append(f"[green]Time:[/] {mins:02d}:{secs:02d}")
         else:
-            status_parts.append("Ready")
+            status_parts.append("[bold green]Ready[/]")
         
-        status_parts.append(f"Queue: {len(self.task_queue)}")
+        if len(self.task_queue) > 0:
+            status_parts.append(f"[magenta]Queue:[/] {len(self.task_queue)}")
+        
+        if self.total_tasks_completed > 0:
+            status_parts.append(f"[green]Done:[/] {self.total_tasks_completed}")
+        
+        status_parts.append("[dim]gemini-2.5-flash[/]")
         
         self.query_one("#status-bar").update(" | ".join(status_parts))
     
@@ -262,40 +387,56 @@ class HyperCodeTUI(App):
         
         while self.task_queue:
             self.current_task = self.task_queue.popleft()
+            self.current_iteration = 0
+            self.task_start_time = datetime.now()
             self.update_status()
             
             # TODO: clear previous steps for new task
             self.query_one("#steps", StepDisplay).clear_steps()
             self.agent = ReActAgent(
-                max_iterations=15,
+                max_iterations=self.max_iterations,
                 on_step=self.on_agent_step
             )
             
             try:
                 result = await asyncio.to_thread(self.agent.run, self.current_task)
                 if result['success']:
+                    self.total_tasks_completed += 1
                     self.on_agent_step(
                         "complete",
                         f"✓ Task completed in {result['iterations']} iterations",
                         result
                     )
                 else:
+                    self.total_tasks_failed += 1
                     self.on_agent_step(
                         "complete",
                         f"⚠ Task incomplete after {result['iterations']} iterations",
                         result
                     )
             except Exception as e:
+                self.total_tasks_failed += 1
                 self.on_agent_step("complete", f"✗ Error: {str(e)}", {"error": str(e)})
             
             self.current_task = None
+            self.current_iteration = 0
+            self.task_start_time = None
             self.update_status()
         
         self.task_running = False
     
     def on_agent_step(self, phase: str, content: str, data: Dict[str, Any]):
+        if "iteration" in data and data["iteration"] != self.current_iteration:
+            self.current_iteration = data["iteration"]
+            self.update_status()
+        
         step_display = self.query_one("#steps", StepDisplay)
         step_display.add_step(phase, content, data)
+        
+        self.query_one("#steps-scroll").scroll_end(animate=True)
+        if phase == "act" and "tool" in data:
+            tool_name = data["tool"]
+            self.tool_usage[tool_name] = self.tool_usage.get(tool_name, 0) + 1
 
         if phase == "observe" and "result" in data:
             result = data["result"]
@@ -304,6 +445,9 @@ class HyperCodeTUI(App):
                 action = result.get("action", "modified")
                 content_preview = result.get("content", "")
                 file_display.add_file_change(result["path"], action, content_preview)
+
+    def action_toggle_right(self):
+        self.query_one("#right-panel").toggle_class("hidden")
     
     def action_quit_or_interrupt(self):
         current_time = datetime.now().timestamp()
@@ -336,7 +480,7 @@ class HyperCodeTUI(App):
 
 
 def main():
-    app = HyperCodeTUI()
+    app = HyperCode()
     app.run()
 
 
